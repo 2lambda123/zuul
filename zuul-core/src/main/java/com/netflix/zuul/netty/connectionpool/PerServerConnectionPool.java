@@ -49,36 +49,36 @@ import java.util.concurrent.atomic.AtomicReference;
 public class PerServerConnectionPool implements IConnectionPool {
     private static final Logger LOG = LoggerFactory.getLogger(PerServerConnectionPool.class);
     public static final AttributeKey<IConnectionPool> CHANNEL_ATTR = AttributeKey.newInstance("_connection_pool");
-    private final ConcurrentHashMap<EventLoop, Deque<PooledConnection>> connectionsPerEventLoop =
+    protected final ConcurrentHashMap<EventLoop, Deque<PooledConnection>> connectionsPerEventLoop =
             new ConcurrentHashMap<>();
     protected final PooledConnectionFactory pooledConnectionFactory;
 
-    private final DiscoveryResult server;
-    private final SocketAddress serverAddr;
-    private final NettyClientConnectionFactory connectionFactory;
-    private final ConnectionPoolConfig config;
-    private final IClientConfig niwsClientConfig;
+    protected final DiscoveryResult server;
+    protected final SocketAddress serverAddr;
+    protected final NettyClientConnectionFactory connectionFactory;
+    protected final ConnectionPoolConfig config;
+    protected final IClientConfig niwsClientConfig;
 
-    private final Counter createNewConnCounter;
-    private final Counter createConnSucceededCounter;
-    private final Counter createConnFailedCounter;
+    protected final Counter createNewConnCounter;
+    protected final Counter createConnSucceededCounter;
+    protected final Counter createConnFailedCounter;
 
-    private final Counter requestConnCounter;
-    private final Counter reuseConnCounter;
-    private final Counter connTakenFromPoolIsNotOpen;
-    private final Counter maxConnsPerHostExceededCounter;
-    private final Counter closeAboveHighWaterMarkCounter;
-    private final Timer connEstablishTimer;
-    private final AtomicInteger connsInPool;
-    private final AtomicInteger connsInUse;
+    protected final Counter requestConnCounter;
+    protected final Counter reuseConnCounter;
+    protected final Counter connTakenFromPoolIsNotOpen;
+    protected final Counter maxConnsPerHostExceededCounter;
+    protected final Counter closeAboveHighWaterMarkCounter;
+    protected final Timer connEstablishTimer;
+    protected final AtomicInteger connsInPool;
+    protected final AtomicInteger connsInUse;
 
     /**
      * This is the count of connections currently in progress of being established.
      * They will only be added to connsInUse _after_ establishment has completed.
      */
-    private final AtomicInteger connCreationsInProgress;
+    protected final AtomicInteger connCreationsInProgress;
 
-    private volatile boolean draining;
+    protected volatile boolean draining;
 
     public PerServerConnectionPool(
             DiscoveryResult server,
@@ -158,7 +158,7 @@ public class PerServerConnectionPool implements IConnectionPool {
         }
 
         requestConnCounter.increment();
-        server.incrementActiveRequestsCount();
+        updateServerStatsOnAcquire();
 
         Promise<PooledConnection> promise = eventLoop.newPromise();
 
@@ -178,6 +178,10 @@ public class PerServerConnectionPool implements IConnectionPool {
         }
 
         return promise;
+    }
+
+    protected void updateServerStatsOnAcquire() {
+        server.incrementActiveRequestsCount();
     }
 
     public PooledConnection tryGettingFromConnectionPool(EventLoop eventLoop) {
@@ -284,22 +288,26 @@ public class PerServerConnectionPool implements IConnectionPool {
     protected void handleConnectCompletion(
             ChannelFuture cf, Promise<PooledConnection> callerPromise, CurrentPassport passport) {
         connCreationsInProgress.decrementAndGet();
-
+        updateServerStatsOnConnectCompletion(cf);
         if (cf.isSuccess()) {
-
             passport.add(PassportState.ORIGIN_CH_CONNECTED);
-            server.incrementOpenConnectionsCount();
             createConnSucceededCounter.increment();
             connsInUse.incrementAndGet();
-
             createConnection(cf, callerPromise, passport);
+        } else {
+            createConnFailedCounter.increment();
+            callerPromise.setFailure(
+                    new OriginConnectException(cf.cause().getMessage(), cf.cause(), OutboundErrorType.CONNECT_ERROR));
+        }
+    }
+
+    protected void updateServerStatsOnConnectCompletion(ChannelFuture cf) {
+        if (cf.isSuccess()) {
+            server.incrementOpenConnectionsCount();
         } else {
             server.incrementSuccessiveConnectionFailureCount();
             server.addToFailureCount();
             server.decrementActiveRequestsCount();
-            createConnFailedCounter.increment();
-            callerPromise.setFailure(
-                    new OriginConnectException(cf.cause().getMessage(), cf.cause(), OutboundErrorType.CONNECT_ERROR));
         }
     }
 
